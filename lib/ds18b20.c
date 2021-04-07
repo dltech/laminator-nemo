@@ -16,8 +16,19 @@
  * limitations under the License.
  */
 
+#include "ds18b20.h"
 #include "../libopencm3/include/libopencm3/stm32/rcc.h"
 #include "../libopencm3/include/libopencm3/stm32/usart.h"
+#include "../libopencm3/include/libopencm3/stm32/dma.h"
+#include "../libopencm3/include/libopencm3/stm32/gpio.h"
+
+void dsPortConfig(void);
+void dsUsartConfig(void);
+void dsDmaConfig(void);
+uint8_t dsUsartTxSingleByte(uint8_t byte);
+uint8_t dsUsartTxMessage(uint8_t msg);
+int dsInitSequence(void);
+
 
 // Hardware related functions (backend).
 
@@ -48,6 +59,33 @@ void dsUsartConfig()
     USART1_CR1 |= USART_CR1_UE;
 }
 
+volatile uint32_t messageTx[8];
+volatile uint32_t messageRx[8];
+
+void dsDmaConfig()
+{
+    // в который раз уже DMA включаю, тут все понятно
+    RCC_AHBENR |= RCC_AHBENR_DMA1EN;
+    // tx
+    DMA1_CPAR2  = (uint32_t) &USART_TDR;
+    DMA1_CMAR2  = (uint32_t) &messageTx;
+    DMA1_CNDTR2 = (uint32_t) 8;
+    // конфиг DMA
+    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
+    ccr |= DMA_CCR_PL_LOW | DMA_CCR_DIR | DMA_CCR_CIRC;
+    ccr |= DMA_CCR_TEIE;
+    // rx
+    DMA1_CCR3 = ccr;
+    DMA1_CPAR3  = (uint32_t) &USART_RDR;
+    DMA1_CMAR3  = (uint32_t) &messageRx;
+    DMA1_CNDTR3 = (uint32_t) 8;
+    // конфиг DMA
+    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
+    ccr |= DMA_CCR_PL_LOW | DMA_CCR_CIRC;
+    ccr |= DMA_CCR_TEIE;
+    DMA1_CCR3 = ccr;
+}
+
 uint8_t dsUsartTxSingleByte(uint8_t byte)
 {
     uint32_t timeout = 1e6;
@@ -65,12 +103,54 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
 }
 
 
+uint8_t dsUsartTxMessage(uint8_t msg)
+{
+    uint32_t timeout = 1e6;
+    uint8_t ret = 0x00;
+    // prepare data in dma
+    for(int i=0 ; i<8 ; ++i) {
+        // inversion caused by open drain output
+        if( (cmd << i) == 1 ) {
+            messageTx[i] = 0x00;
+        } else {
+            messageTx[i] = 0xff;
+        }
+    }
+
+    USART1_BRR |= BAUD115200;
+    // DMA config
+    USART1_CR3 |= USART_CR3_DMAR;
+    USART1_CR3 |= USART_CR3_DMAT;
+    DMA1_CCR2 |= DMA_CCR_EN;
+    DMA1_CCR3 |= DMA_CCR_EN;
+    // on transmisson
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
+    // wait until complete
+    while(((USART1_ISR & USART_ISR_TC) == 0) || (--timeout > 0));
+    // off everything
+    USART1_CR1 &= ~USART_CR1_TE;
+    USART1_CR1 &= ~USART_CR1_RE;
+    DMA1_CCR2 &= ~DMA_CCR_EN;
+    DMA1_CCR3 &= ~DMA_CCR_EN;
+
+    // decode output
+    for(int i=0 ; i<8 ; ++i) {
+        // inversion caused by open drain output
+        if( (messageTx[i] & 0x02) == 1 ) {
+            ret |= 1<<i;
+        }
+    }
+    return ret;
+}
+
 // DS18B20 related functions based of low-level presented above
 
 void dsInit()
 {
     dsPortConfig();
     dsUsartConfig();
+    dsDmaConfig();
     dsInitSequence();
 }
 
@@ -81,7 +161,6 @@ int dsInitSequence()
     const uint8_t presence_bit = 1 << 6;
     USART1_BRR |= BAUD9600;
     uint8_t ret = dsUsartTxSingleByte(init_word);
-    USART1_BRR |= BAUD115200;
     if( (ret & presence_bit == 0) ) {
         return 0;
     } else {
@@ -119,25 +198,47 @@ uint8_t dsCrc(uint8_t data, uint8_t size)
     return crc;
 }
 
-void dsSendCmd(uint8_t cmd)
+int dsReadRomCmd()
 {
-    USART_TDR |=
-
+    uint8_t buffer[7];
+    dsUsartTxMessage(READ_ROM);
+    if( dsUsartTxMessage(0x00) != FAMILY_CODE ) {
+        return -1;
+    }
+    // ds ROM CODE not needed
+    for(int i=0 ; i<6 ; ++i) {
+        buffer[i+1] = dsUsartTxMessage(0x00);
+    }
+    buffer[0] = FAMILY_CODE;
+    uint8_t crc = dsUsartTxMessage(0x00);
+    if( crc == dsCrc(buffer,7) ) {
+        return 0;
+    }
+    return -1;
 }
 
-void dsFoundDev()
+uint8_t dsStart()
 {
-
+    dsReadRomCmd();
+    dsUsartTxMessage(CONVERT_T);
 }
 
+uint8_t tempBlocking()
+{
+    dsStart();
+    while( dsUsartTxSingleByte(0x00) ==  )
+}
+
+/*
 void dsRomCycle(uint64_t romCode)
 {
     int isSuccess = 0;
-    dsInitSequence();
     if(isOne) {
-        dsSendCmd(READ_ROM);
+        dsUsartTxMessage(READ_ROM);
+        dsUsartTxMessage(0x00);
+
     } else {
-        dsSendCmd(SEARCH_ROM);
+        dsUsartTxMessage(SEARCH_ROM);
     }
     return isSuccess;
 }
@@ -158,3 +259,4 @@ int dsInitMultiple()
 {
 
 }
+*/

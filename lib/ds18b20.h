@@ -27,6 +27,8 @@
 #define SKIP_ROM        0xf0
 #define ALARM_SEARCH    0xf0
 
+#define FAMILY_CODE     0x28
+
 // Function commands
 #define CONVERT_T           0x44
 #define READ_SCRATCHPAD     0xbe
@@ -43,5 +45,10 @@
 // usart related
 #define BAUD9600    0x1388
 #define BAUT115200  0x01A1
+
+
+void dsInit(void);
+
+
 
 #endif
