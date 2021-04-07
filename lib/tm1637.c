@@ -1,13 +1,34 @@
-#include "tm1637.h"
+/*
+ * printf for TM1637 display-driver based 7-segment displays
+ * connected to STM32.
+ *
+ * Copyright 2021 Mikhail Belkin <dltech174@gmail.com>
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
+#include "tm1637.h"
 #include "../libopencm3/include/libopencm3/stm32/rcc.h"
 #include "../libopencm3/include/libopencm3/stm32/gpio.h"
 #include "../libopencm3/include/libopencm3/stm32/timer.h"
 
+// little init functions as parts of main init function
 void tmPortInit(void);
 void tmDelayInit(void);
+// timer based accurate delays
 void quaterTact(void);
 void halfTact(void);
+// data transmission
 int pushByte(uint8_t byte);
 int tipoI2cBlockingTx1(uint8_t data);
 int tipoI2cBlockingTx(uint8_t *data, uint8_t size);
@@ -92,6 +113,7 @@ int pushByte(uint8_t byte)
     return ret;
 }
 
+// transmit to tm only one byte
 int tipoI2cBlockingTx1(uint8_t data)
 {
     int err = 0;
@@ -115,6 +137,7 @@ int tipoI2cBlockingTx1(uint8_t data)
     return err;
 }
 
+// transmit to tm array of bytes
 int tipoI2cBlockingTx(uint8_t *data, uint8_t size)
 {
     int err = 0;
