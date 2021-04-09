@@ -29,6 +29,10 @@ uint8_t dsUsartTxSingleByte(uint8_t byte);
 uint8_t dsUsartTxMessage(uint8_t msg);
 int dsInitSequence(void);
 uint8_t dsReadOneBit(void);
+uint8_t dsCrc(uint8_t data, uint8_t size);
+int dsReadRomCmd(void);
+int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
+
 
 
 // Hardware related functions (backend).
