@@ -28,6 +28,7 @@ void dsDmaConfig(void);
 uint8_t dsUsartTxSingleByte(uint8_t byte);
 uint8_t dsUsartTxMessage(uint8_t msg);
 int dsInitSequence(void);
+uint8_t dsReadOneBit(void);
 
 
 // Hardware related functions (backend).
@@ -51,12 +52,12 @@ void dsPortConfig()
 void dsUsartConfig()
 {
     RCC_APB2ENR |= RCC_APB2ENR_USART1EN;
-    USART1_CR1 &= ~(USART_CR1_M0);  // 8-bit len
-    USART1_CR1 &= ~(USART_CR1_PCE); // off parity
-    USART1_CR2 |= USART_CR2_STOPBITS_1 // stop bits
-    USART1_CR1 &= ~(USART_CR1_OVER8);
+    USART1_CR1 &= ~(USART_CR1_M0);      // 8-bit len
+    USART1_CR1 &= ~(USART_CR1_PCE);     // off parity
+    USART1_CR2 |= USART_CR2_STOPBITS_1; // stop bits
+    USART1_CR1 &= ~(USART_CR1_OVER8);   // baud rate
     USART1_BRR |= BAUD9600;
-    USART1_CR1 |= USART_CR1_UE;
+    USART1_CR1 |= USART_CR1_UE;         // on uart
 }
 
 volatile uint32_t messageTx[8];
@@ -74,8 +75,8 @@ void dsDmaConfig()
     uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
     ccr |= DMA_CCR_PL_LOW | DMA_CCR_DIR | DMA_CCR_CIRC;
     ccr |= DMA_CCR_TEIE;
+    DMA1_CCR2 = ccr;
     // rx
-    DMA1_CCR3 = ccr;
     DMA1_CPAR3  = (uint32_t) &USART_RDR;
     DMA1_CMAR3  = (uint32_t) &messageRx;
     DMA1_CNDTR3 = (uint32_t) 8;
@@ -151,7 +152,7 @@ void dsInit()
     dsPortConfig();
     dsUsartConfig();
     dsDmaConfig();
-    dsInitSequence();
+    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
 }
 
 // returns 0 if device is found
@@ -163,11 +164,17 @@ int dsInitSequence()
     uint8_t ret = dsUsartTxSingleByte(init_word);
     if( (ret & presence_bit == 0) ) {
         return 0;
-    } else {
-        return -1;
     }
+    return -1;
 }
 
+uint8_t dsReadOneBit()
+{
+    if( (dsUsartTxSingleByte(0x00) & 0x02) > 0 ) {
+        return 1;
+    }
+    return 0;
+}
 
 // This function calculates the cumulative Maxim 1-Wire CRC of the message.
 // The result will be 0 if ok. The table was obtained from maximintegrated.com.
@@ -201,6 +208,9 @@ uint8_t dsCrc(uint8_t data, uint8_t size)
 int dsReadRomCmd()
 {
     uint8_t buffer[7];
+    if( dsInitSequence() < 0 ) {
+        return -1;
+    }
     dsUsartTxMessage(READ_ROM);
     if( dsUsartTxMessage(0x00) != FAMILY_CODE ) {
         return -1;
@@ -217,16 +227,80 @@ int dsReadRomCmd()
     return -1;
 }
 
-uint8_t dsStart()
+// reads scratchpad, returns temperature only, multiplied by 1000
+int dsReadScratchpad()
 {
-    dsReadRomCmd();
+    if( dsReadRomCmd() < 0 ) {
+        return -1;
+    }
+    dsUsartTxMessage(READ_SCRATCHPAD);
+    uint8_t scratchpad[9];
+    uint8_t crc;
+    for(int i=0 ; i<9 ; ++i) {
+        scratchpad[i] = dsUsartTxMessage(0x00);
+    }
+    if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
+        return -1;
+    }
+    uint8_t tempRaw = scratchpad[0] + (scratchpad[1] << 8);
+    switch(scratchpad[4])
+    {
+        case RESOL_9BIT :
+            return tempRaw * 500;
+            break;
+        case RESOL_10BIT :
+            return tempRaw * 250;
+            break;
+        case RESOL_11BIT :
+            return tempRaw * 125;
+            break;
+        case RESOL_12BIT :
+            return (tempRaw * 625)/10;
+            break;
+    }
+    return -1;
+}
+
+int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
+{
+    if( dsReadRomCmd() < 0 ) {
+        return -1;
+    }
+    dsUsartTxMessage(WRITE_SCRATCHPAD);
+    dsUsartTxMessage((uint8_t)(Tpar & 0x00ff));
+    dsUsartTxMessage((uint8_t)(Tpar >> 8));
+    dsUsartTxMessage(configByte);
+    if( dsReadRomCmd() < 0 ) {
+        return -1;
+    }
+    dsUsartTxMessage(COPY_SCRATCHPAD);
+    uint32_t timeout = 1e6;
+    while( (dsReadOneBit() == 0) && (--timeout > 0) );
+    if(timeout < 2) {
+        return -1;
+    }
+    return 0;
+}
+
+int dsStart()
+{
+    if( dsReadRomCmd() < 0 ) {
+        return -1;
+    }
     dsUsartTxMessage(CONVERT_T);
 }
 
-uint8_t tempBlocking()
+int tempBlocking()
 {
-    dsStart();
-    while( dsUsartTxSingleByte(0x00) ==  )
+    uint32_t timeout = 1e6;
+    if( dsStart() < 0 ) {
+        return -1;
+    }
+    while( (dsReadOneBit() == 0) && (--timeout > 0) );
+    if(timeout > 0) {
+        return dsReadScratchpad();
+    }
+    return -1;
 }
 
 /*

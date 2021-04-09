@@ -18,16 +18,14 @@
  * limitations under the License.
  */
 
-#define NUMBER_OF_DEVICES  0   // if there are multiple devices, this number set here
-
 // Rom commands
-#define SEARCH_ROM      0xf0
-#define READ_ROM        0x33
-#define MATCH_ROM       0xf0
-#define SKIP_ROM        0xf0
-#define ALARM_SEARCH    0xf0
+#define SEARCH_ROM          0xf0
+#define READ_ROM            0x33
+#define MATCH_ROM           0x55
+#define SKIP_ROM            0xcc
+#define ALARM_SEARCH        0xec
 
-#define FAMILY_CODE     0x28
+#define FAMILY_CODE         0x28
 
 // Function commands
 #define CONVERT_T           0x44
@@ -36,6 +34,12 @@
 #define COPY_SCRATCHPAD     0x48
 #define RECALL_E2           0xb8
 #define READ_POWER_SUPPLY   0xb4
+
+// configuration
+#define RESOL_9BIT          0x1f
+#define RESOL_10BIT         0x3f
+#define RESOL_11BIT         0x5f
+#define RESOL_12BIT         0x7f
 
 // mcu related
 #define DS_PORT GPIOA
@@ -46,8 +50,13 @@
 #define BAUD9600    0x1388
 #define BAUT115200  0x01A1
 
+// set the resolution
+#define DEFAULT_RESOL       RESOL_9BIT
 
 void dsInit(void);
+int dsStart(void);
+int tempBlocking(void);
+int dsReadScratchpad(void);
 
 
 
