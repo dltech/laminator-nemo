@@ -1,20 +1,17 @@
 #include "mystmbackend.h"
 #include "printf7.h"
 #include "freq_dr.h"
+#include "ds18b20.h"
 
 
-volatile uint8_t cycles = 0;
+volatile int temp = 0;
 
 int main(void) {
 	clkInit();
-	tmInit();
-	setBrightness(100);
-	initPwm();
+	dsInit();
 
 	while(1){
-		myprintf("%03d",cycles);
-		rough_delay_us(10000);
-
-		++cycles;
+		temp = tempBlocking();
+		delay_s(1);
 	}
 }

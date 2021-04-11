@@ -8,6 +8,7 @@ CFILES += printf7.c
 CFILES += tm1637.c
 CFILES += freq_dr.c
 CFILES += cmsis_sin.c
+CFILES += ds18b20.c
 
 DEVICE=stm32f030F4P6
 OOCD_FILE = board/stm32f0discovery.cfg

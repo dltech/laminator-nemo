@@ -1,1 +1,6 @@
 *cache*
+*.o
+*.d
+*.ld
+core
+

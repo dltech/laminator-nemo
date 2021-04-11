@@ -43,12 +43,12 @@
 
 // mcu related
 #define DS_PORT GPIOA
-#define RX_PIN  GPIO3
-#define TX_PIN  GPIO2
+#define RX_PIN  3
+#define TX_PIN  2
 
 // usart related
 #define BAUD9600    0x1388
-#define BAUT115200  0x01A1
+#define BAUD115200  0x01A1
 
 // set the resolution
 #define DEFAULT_RESOL       RESOL_9BIT

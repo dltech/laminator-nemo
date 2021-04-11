@@ -29,10 +29,14 @@ uint8_t dsUsartTxSingleByte(uint8_t byte);
 uint8_t dsUsartTxMessage(uint8_t msg);
 int dsInitSequence(void);
 uint8_t dsReadOneBit(void);
-uint8_t dsCrc(uint8_t data, uint8_t size);
+uint8_t dsCrc(uint8_t *data, uint8_t size);
 int dsReadRomCmd(void);
 int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
 
+
+volatile uint8_t start;
+volatile uint8_t readMsg[8];
+volatile uint8_t readByte;
 
 
 // Hardware related functions (backend).
@@ -47,10 +51,8 @@ void dsPortConfig()
                    | GPIO_OSPEED_100MHZ << (RX_PIN*2);
     GPIOA_PUPDR   |= GPIO_PUPD_PULLUP << (TX_PIN*2) \
                    | GPIO_PUPD_PULLUP << (RX_PIN*2);
-                   GPIOA_AFRH |= GPIO_AF4 << ((SCL-8)*4) \
-                               | GPIO_AF4 << ((SDA-8)*4);
-    GPIOA_AFRL    |= GPIO_AF1 << ((TX_PIN-8)*4) \
-                   | GPIO_AF1 << ((RX_PIN-8)*4);
+    GPIOA_AFRL    |= GPIO_AF1 << (TX_PIN*4) \
+                   | GPIO_AF1 << (RX_PIN*4);
 }
 
 void dsUsartConfig()
@@ -72,7 +74,7 @@ void dsDmaConfig()
     // в который раз уже DMA включаю, тут все понятно
     RCC_AHBENR |= RCC_AHBENR_DMA1EN;
     // tx
-    DMA1_CPAR2  = (uint32_t) &USART_TDR;
+    DMA1_CPAR2  = (uint32_t) &USART1_TDR;
     DMA1_CMAR2  = (uint32_t) &messageTx;
     DMA1_CNDTR2 = (uint32_t) 8;
     // конфиг DMA
@@ -81,11 +83,11 @@ void dsDmaConfig()
     ccr |= DMA_CCR_TEIE;
     DMA1_CCR2 = ccr;
     // rx
-    DMA1_CPAR3  = (uint32_t) &USART_RDR;
+    DMA1_CPAR3  = (uint32_t) &USART1_RDR;
     DMA1_CMAR3  = (uint32_t) &messageRx;
     DMA1_CNDTR3 = (uint32_t) 8;
     // конфиг DMA
-    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
+    ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
     ccr |= DMA_CCR_PL_LOW | DMA_CCR_CIRC;
     ccr |= DMA_CCR_TEIE;
     DMA1_CCR3 = ccr;
@@ -97,13 +99,14 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
     uint8_t ret = 0xff;
     USART1_CR1 |= USART_CR1_RE;
     USART1_CR1 |= USART_CR1_TE;
-    USART_TDR = byte;
+    USART1_TDR = byte;
     while(((USART1_ISR & USART_ISR_TC) == 0) || (--timeout > 0));
     if( USART1_ISR & USART_ISR_RXNE ){
         ret = USART1_RDR;
     }
     USART1_CR1 &= ~USART_CR1_TE;
     USART1_CR1 &= ~USART_CR1_RE;
+    readByte = ret;
     return ret;
 }
 
@@ -115,7 +118,7 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     // prepare data in dma
     for(int i=0 ; i<8 ; ++i) {
         // inversion caused by open drain output
-        if( (cmd << i) == 1 ) {
+        if( (msg & (1 << i)) > 0 ) {
             messageTx[i] = 0x00;
         } else {
             messageTx[i] = 0xff;
@@ -142,7 +145,8 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     // decode output
     for(int i=0 ; i<8 ; ++i) {
         // inversion caused by open drain output
-        if( (messageTx[i] & 0x02) == 1 ) {
+        readMsg[i] = messageRx[i];
+        if( (messageRx[i] & 0x02) > 0 ) {
             ret |= 1<<i;
         }
     }
@@ -166,7 +170,9 @@ int dsInitSequence()
     const uint8_t presence_bit = 1 << 6;
     USART1_BRR |= BAUD9600;
     uint8_t ret = dsUsartTxSingleByte(init_word);
-    if( (ret & presence_bit == 0) ) {
+    //otl
+    start = ret;
+    if( ((ret & presence_bit) == 0) ) {
         return 0;
     }
     return -1;
@@ -182,9 +188,9 @@ uint8_t dsReadOneBit()
 
 // This function calculates the cumulative Maxim 1-Wire CRC of the message.
 // The result will be 0 if ok. The table was obtained from maximintegrated.com.
-uint8_t dsCrc(uint8_t data, uint8_t size)
+uint8_t dsCrc(uint8_t *data, uint8_t size)
 {
-    const uint8_t table[255] =
+    const uint8_t table[256] =
         {0, 94, 188, 226, 97, 63, 221, 131, 194, 156, 126, 32, 163, 253, 31, 65,
         157, 195, 33, 127, 252, 162, 64, 30, 95, 1, 227, 189, 62, 96, 130, 220,
         35, 125, 159, 193, 66, 28, 254, 160, 225, 191, 93, 3, 128, 222, 60, 98,
@@ -201,7 +207,7 @@ uint8_t dsCrc(uint8_t data, uint8_t size)
         87, 9, 235, 181, 54, 104, 138, 212, 149, 203, 41, 119, 244, 170, 72, 22,
         233, 183, 85, 11, 136, 214, 52, 106, 43, 117, 151, 201, 74, 20, 246, 168,
         116, 42, 200, 150, 21, 75, 169, 247, 182, 232, 10, 84, 215, 137, 107, 53};
-    uint8_t crc;
+    uint8_t crc = 0;
 
     for(int i=0 ; i<size ; ++i) {
         crc = table[crc ^ data[i]];
@@ -292,6 +298,7 @@ int dsStart()
         return -1;
     }
     dsUsartTxMessage(CONVERT_T);
+    return 0;
 }
 
 int tempBlocking()
