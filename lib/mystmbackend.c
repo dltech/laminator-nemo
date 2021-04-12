@@ -8,7 +8,8 @@
 void clkInit()
 {
     // не знаю зачем, на всякий случай
-    RCC_CR2  |= RCC_CR2_HSI14ON;
+    RCC_CR  |= RCC_CR_HSION;
+    RCC_CFGR2 = RCC_CFGR2_PREDIV_NODIV;
     // такирование от встроенных RC генераторов, SYS 48 МГц, AHB 48МГц, APB 48 МГц
     uint32_t timeout = TIMEOUT_CLKS;
     if ( (RCC_CFGR & RCC_CFGR_SWS) == RCC_CFGR_SWS_PLL )

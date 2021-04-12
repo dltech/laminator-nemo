@@ -47,7 +47,7 @@
 #define TX_PIN  2
 
 // usart related
-#define BAUD9600    0x1388
+#define BAUD9600    0x09c4
 #define BAUD115200  0x01A1
 
 // set the resolution

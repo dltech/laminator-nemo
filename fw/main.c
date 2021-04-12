@@ -11,7 +11,7 @@ int main(void) {
 	dsInit();
 
 	while(1){
-		temp = tempBlocking();
+//		temp = tempBlocking();
 		delay_s(1);
 	}
 }

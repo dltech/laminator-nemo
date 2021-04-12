@@ -17,10 +17,13 @@
  */
 
 #include "ds18b20.h"
+#include "mystmbackend.h"
 #include "../libopencm3/include/libopencm3/stm32/rcc.h"
 #include "../libopencm3/include/libopencm3/stm32/usart.h"
 #include "../libopencm3/include/libopencm3/stm32/dma.h"
 #include "../libopencm3/include/libopencm3/stm32/gpio.h"
+#include "../libopencm3/include/libopencm3/stm32/syscfg.h"
+
 
 void dsPortConfig(void);
 void dsUsartConfig(void);
@@ -37,6 +40,8 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
 volatile uint8_t start;
 volatile uint8_t readMsg[8];
 volatile uint8_t readByte;
+volatile int otl5, otl10;
+volatile uint8_t otl6, otl7, otl8, otl9;
 
 
 // Hardware related functions (backend).
@@ -47,8 +52,7 @@ void dsPortConfig()
     GPIOA_MODER   |= GPIO_MODE_AF << (TX_PIN*2) \
                    | GPIO_MODE_AF << (RX_PIN*2);
     GPIOA_OTYPER  |= GPIO_OTYPE_OD << (TX_PIN);
-    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (TX_PIN*2) \
-                   | GPIO_OSPEED_100MHZ << (RX_PIN*2);
+    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (TX_PIN*2);
     GPIOA_PUPDR   |= GPIO_PUPD_PULLUP << (TX_PIN*2) \
                    | GPIO_PUPD_PULLUP << (RX_PIN*2);
     GPIOA_AFRL    |= GPIO_AF1 << (TX_PIN*4) \
@@ -57,29 +61,33 @@ void dsPortConfig()
 
 void dsUsartConfig()
 {
+    RCC_CFGR3 |= RCC_CFGR3_USART1SW_PCLK;
     RCC_APB2ENR |= RCC_APB2ENR_USART1EN;
     USART1_CR1 &= ~(USART_CR1_M0);      // 8-bit len
     USART1_CR1 &= ~(USART_CR1_PCE);     // off parity
     USART1_CR2 |= USART_CR2_STOPBITS_1; // stop bits
+    USART1_CR2 &= ~(USART_CR2_MSBFIRST);
     USART1_CR1 &= ~(USART_CR1_OVER8);   // baud rate
-    USART1_BRR |= BAUD9600;
-    USART1_CR1 |= USART_CR1_UE;         // on uart
+    USART1_BRR = BAUD9600;
+//    USART1_CR1 |= USART_CR1_UE;         // on uart
 }
 
-volatile uint32_t messageTx[8];
-volatile uint32_t messageRx[8];
+volatile uint8_t messageTx[8];
+volatile uint8_t messageRx[8];
 
 void dsDmaConfig()
 {
     // в который раз уже DMA включаю, тут все понятно
     RCC_AHBENR |= RCC_AHBENR_DMA1EN;
+    SYSCFG_CFGR1 &= ~SYSCFG_CFGR1_USART1_RX_DMA_RMP;
+    SYSCFG_CFGR1 &= ~SYSCFG_CFGR1_USART1_TX_DMA_RMP;
     // tx
     DMA1_CPAR2  = (uint32_t) &USART1_TDR;
     DMA1_CMAR2  = (uint32_t) &messageTx;
     DMA1_CNDTR2 = (uint32_t) 8;
     // конфиг DMA
-    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
-    ccr |= DMA_CCR_PL_LOW | DMA_CCR_DIR | DMA_CCR_CIRC;
+    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_8BIT | DMA_CCR_PSIZE_8BIT;
+    ccr |= DMA_CCR_PL_LOW | DMA_CCR_DIR;
     ccr |= DMA_CCR_TEIE;
     DMA1_CCR2 = ccr;
     // rx
@@ -87,8 +95,8 @@ void dsDmaConfig()
     DMA1_CMAR3  = (uint32_t) &messageRx;
     DMA1_CNDTR3 = (uint32_t) 8;
     // конфиг DMA
-    ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_32BIT | DMA_CCR_PSIZE_32BIT;
-    ccr |= DMA_CCR_PL_LOW | DMA_CCR_CIRC;
+    ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_8BIT | DMA_CCR_PSIZE_8BIT;
+    ccr |= DMA_CCR_PL_LOW;
     ccr |= DMA_CCR_TEIE;
     DMA1_CCR3 = ccr;
 }
@@ -100,13 +108,14 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
     USART1_CR1 |= USART_CR1_RE;
     USART1_CR1 |= USART_CR1_TE;
     USART1_TDR = byte;
-    while(((USART1_ISR & USART_ISR_TC) == 0) || (--timeout > 0));
-    if( USART1_ISR & USART_ISR_RXNE ){
+    while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
+    USART1_ISR |= USART_ISR_TC;
+    while(((USART1_ISR & USART_ISR_RXNE) == 0) && (--timeout > 0));
+    if( (USART1_ISR & USART_ISR_RXNE) > 0 ){
         ret = USART1_RDR;
     }
     USART1_CR1 &= ~USART_CR1_TE;
     USART1_CR1 &= ~USART_CR1_RE;
-    readByte = ret;
     return ret;
 }
 
@@ -117,15 +126,14 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     uint8_t ret = 0x00;
     // prepare data in dma
     for(int i=0 ; i<8 ; ++i) {
-        // inversion caused by open drain output
         if( (msg & (1 << i)) > 0 ) {
-            messageTx[i] = 0x00;
-        } else {
             messageTx[i] = 0xff;
+        } else {
+            messageTx[i] = 0x00;
         }
+        messageRx[i] = 0;
     }
 
-    USART1_BRR |= BAUD115200;
     // DMA config
     USART1_CR3 |= USART_CR3_DMAR;
     USART1_CR3 |= USART_CR3_DMAT;
@@ -135,7 +143,9 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     USART1_CR1 |= USART_CR1_RE;
     USART1_CR1 |= USART_CR1_TE;
     // wait until complete
-    while(((USART1_ISR & USART_ISR_TC) == 0) || (--timeout > 0));
+    while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
+    USART1_ISR |= USART_ISR_TC;
+    otl10 = timeout;
     // off everything
     USART1_CR1 &= ~USART_CR1_TE;
     USART1_CR1 &= ~USART_CR1_RE;
@@ -144,7 +154,6 @@ uint8_t dsUsartTxMessage(uint8_t msg)
 
     // decode output
     for(int i=0 ; i<8 ; ++i) {
-        // inversion caused by open drain output
         readMsg[i] = messageRx[i];
         if( (messageRx[i] & 0x02) > 0 ) {
             ret |= 1<<i;
@@ -160,19 +169,26 @@ void dsInit()
     dsPortConfig();
     dsUsartConfig();
     dsDmaConfig();
-    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
+    delay_s(1);
+//    dsInitSequence();
+    dsReadRomCmd();
+//    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
+
 }
 
 // returns 0 if device is found
 int dsInitSequence()
 {
-    const uint8_t init_word = 0x0f;
-    const uint8_t presence_bit = 1 << 6;
-    USART1_BRR |= BAUD9600;
+    const uint8_t init_word = 0xf0;
+    const uint8_t ok1 = 0x90;
+    const uint8_t ok2 = 0x10;
+    USART1_BRR = BAUD9600;
+    USART1_CR1 |= USART_CR1_UE;
     uint8_t ret = dsUsartTxSingleByte(init_word);
-    //otl
-    start = ret;
-    if( ((ret & presence_bit) == 0) ) {
+    USART1_CR1 &= ~USART_CR1_UE;
+    USART1_BRR = BAUD115200;
+    USART1_CR1 |= USART_CR1_UE;
+    if( (ret == ok1 ) || (ret == ok2) ) {
         return 0;
     }
     return -1;
@@ -180,7 +196,7 @@ int dsInitSequence()
 
 uint8_t dsReadOneBit()
 {
-    if( (dsUsartTxSingleByte(0x00) & 0x02) > 0 ) {
+    if( (dsUsartTxSingleByte(0xff) & 0x02) > 0 ) {
         return 1;
     }
     return 0;
@@ -221,16 +237,21 @@ int dsReadRomCmd()
     if( dsInitSequence() < 0 ) {
         return -1;
     }
-    dsUsartTxMessage(READ_ROM);
-    if( dsUsartTxMessage(0x00) != FAMILY_CODE ) {
+    otl6 = dsUsartTxMessage(READ_ROM);
+    otl5 = 10;
+    buffer[0] = dsUsartTxMessage(0xff);
+    otl7 = buffer[0];
+    if( buffer[0] != FAMILY_CODE ) {
         return -1;
     }
     // ds ROM CODE not needed
     for(int i=0 ; i<6 ; ++i) {
-        buffer[i+1] = dsUsartTxMessage(0x00);
+        buffer[i+1] = dsUsartTxMessage(0xff);
     }
     buffer[0] = FAMILY_CODE;
-    uint8_t crc = dsUsartTxMessage(0x00);
+    uint8_t crc = dsUsartTxMessage(0xff);
+    otl9 = crc;
+    otl8 = dsCrc(buffer,7);
     if( crc == dsCrc(buffer,7) ) {
         return 0;
     }
@@ -247,7 +268,7 @@ int dsReadScratchpad()
     uint8_t scratchpad[9];
     uint8_t crc;
     for(int i=0 ; i<9 ; ++i) {
-        scratchpad[i] = dsUsartTxMessage(0x00);
+        scratchpad[i] = dsUsartTxMessage(0xff);
     }
     if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
         return -1;
