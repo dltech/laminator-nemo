@@ -1,6 +1,5 @@
 /*
  * stm32 usart based ds18b20 lib
- *
  * Copyright 2021 Mikhail Belkin <dltech174@gmail.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,20 +27,15 @@
 void dsPortConfig(void);
 void dsUsartConfig(void);
 void dsDmaConfig(void);
-uint8_t dsUsartTxSingleByte(uint8_t byte);
-uint8_t dsUsartTxMessage(uint8_t msg);
 int dsInitSequence(void);
+uint8_t dsUsartTxSingleByte(uint8_t byte);
+uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one);
 uint8_t dsReadOneBit(void);
+int dsTxByte(uint8_t byte);
+uint8_t dsRxByte(void);
 uint8_t dsCrc(uint8_t *data, uint8_t size);
 int dsReadRomCmd(void);
 int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
-
-
-volatile uint8_t start;
-volatile uint8_t readMsg[8];
-volatile uint8_t readByte;
-volatile int otl5, otl10;
-volatile uint8_t otl6, otl7, otl8, otl9;
 
 
 // Hardware related functions (backend).
@@ -61,7 +55,7 @@ void dsPortConfig()
 
 void dsUsartConfig()
 {
-    RCC_CFGR3 |= RCC_CFGR3_USART1SW_PCLK;
+    RCC_CFGR3 |= RCC_CFGR3_USART3SW_SYSCLK;
     RCC_APB2ENR |= RCC_APB2ENR_USART1EN;
     USART1_CR1 &= ~(USART_CR1_M0);      // 8-bit len
     USART1_CR1 &= ~(USART_CR1_PCE);     // off parity
@@ -69,7 +63,6 @@ void dsUsartConfig()
     USART1_CR2 &= ~(USART_CR2_MSBFIRST);
     USART1_CR1 &= ~(USART_CR1_OVER8);   // baud rate
     USART1_BRR = BAUD9600;
-//    USART1_CR1 |= USART_CR1_UE;         // on uart
 }
 
 volatile uint8_t messageTx[8];
@@ -105,8 +98,6 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
 {
     uint32_t timeout = 1e6;
     uint8_t ret = 0xff;
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
     USART1_TDR = byte;
     while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
     USART1_ISR |= USART_ISR_TC;
@@ -114,20 +105,18 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
     if( (USART1_ISR & USART_ISR_RXNE) > 0 ){
         ret = USART1_RDR;
     }
-    USART1_CR1 &= ~USART_CR1_TE;
-    USART1_CR1 &= ~USART_CR1_RE;
     return ret;
 }
 
 
-uint8_t dsUsartTxMessage(uint8_t msg)
+uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one)
 {
     uint32_t timeout = 1e6;
     uint8_t ret = 0x00;
     // prepare data in dma
     for(int i=0 ; i<8 ; ++i) {
         if( (msg & (1 << i)) > 0 ) {
-            messageTx[i] = 0xff;
+            messageTx[i] = one;
         } else {
             messageTx[i] = 0x00;
         }
@@ -135,6 +124,8 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     }
 
     // DMA config
+    DMA1_CNDTR2 = (uint32_t) 8;
+    DMA1_CNDTR3 = (uint32_t) 8;
     USART1_CR3 |= USART_CR3_DMAR;
     USART1_CR3 |= USART_CR3_DMAT;
     DMA1_CCR2 |= DMA_CCR_EN;
@@ -144,22 +135,36 @@ uint8_t dsUsartTxMessage(uint8_t msg)
     USART1_CR1 |= USART_CR1_TE;
     // wait until complete
     while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
+    // reset flag
     USART1_ISR |= USART_ISR_TC;
-    otl10 = timeout;
     // off everything
     USART1_CR1 &= ~USART_CR1_TE;
     USART1_CR1 &= ~USART_CR1_RE;
     DMA1_CCR2 &= ~DMA_CCR_EN;
     DMA1_CCR3 &= ~DMA_CCR_EN;
-
+    USART1_CR3 &= ~USART_CR3_DMAR;
+    USART1_CR3 &= ~USART_CR3_DMAT;
     // decode output
     for(int i=0 ; i<8 ; ++i) {
-        readMsg[i] = messageRx[i];
         if( (messageRx[i] & 0x02) > 0 ) {
             ret |= 1<<i;
         }
     }
     return ret;
+}
+
+int dsTxByte(uint8_t byte)
+{
+    uint8_t ret = dsUsartTxMessage(byte, 0xff);
+    if(ret != byte) {
+        return -1;
+    }
+    return 0;
+}
+
+uint8_t dsRxByte()
+{
+    return dsUsartTxMessage(0xff, 0xfe);
 }
 
 // DS18B20 related functions based of low-level presented above
@@ -169,26 +174,35 @@ void dsInit()
     dsPortConfig();
     dsUsartConfig();
     dsDmaConfig();
-    delay_s(1);
-//    dsInitSequence();
-    dsReadRomCmd();
-//    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
-
+    rough_delay_us(100);
+    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
+    dsStart();
 }
 
 // returns 0 if device is found
 int dsInitSequence()
 {
     const uint8_t init_word = 0xf0;
-    const uint8_t ok1 = 0x90;
-    const uint8_t ok2 = 0x10;
+    const uint8_t ok = 0xe0;
+    // init seq works on 9600
+    USART1_CR1 &= ~USART_CR1_UE;
+    USART1_CR1 &= ~USART_CR1_RE;
+    USART1_CR1 &= ~USART_CR1_TE;
     USART1_BRR = BAUD9600;
     USART1_CR1 |= USART_CR1_UE;
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
     uint8_t ret = dsUsartTxSingleByte(init_word);
+    // change baud rate for ongoing communication
     USART1_CR1 &= ~USART_CR1_UE;
+    USART1_CR1 &= ~USART_CR1_RE;
+    USART1_CR1 &= ~USART_CR1_TE;
     USART1_BRR = BAUD115200;
     USART1_CR1 |= USART_CR1_UE;
-    if( (ret == ok1 ) || (ret == ok2) ) {
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
+    // check is there ds18b20
+    if( ret == ok ) {
         return 0;
     }
     return -1;
@@ -231,31 +245,30 @@ uint8_t dsCrc(uint8_t *data, uint8_t size)
     return crc;
 }
 
+// commands
+
 int dsReadRomCmd()
 {
     uint8_t buffer[7];
-    if( dsInitSequence() < 0 ) {
+    int ret;
+    ret =  dsInitSequence();
+    ret += dsTxByte(READ_ROM);
+    if( ret < 0 ) {
         return -1;
     }
-    otl6 = dsUsartTxMessage(READ_ROM);
-    otl5 = 10;
-    buffer[0] = dsUsartTxMessage(0xff);
-    otl7 = buffer[0];
+    buffer[0] = dsRxByte();
     if( buffer[0] != FAMILY_CODE ) {
         return -1;
     }
     // ds ROM CODE not needed
     for(int i=0 ; i<6 ; ++i) {
-        buffer[i+1] = dsUsartTxMessage(0xff);
+        buffer[i+1] = dsRxByte();
     }
-    buffer[0] = FAMILY_CODE;
-    uint8_t crc = dsUsartTxMessage(0xff);
-    otl9 = crc;
-    otl8 = dsCrc(buffer,7);
-    if( crc == dsCrc(buffer,7) ) {
-        return 0;
+    uint8_t crc = dsRxByte();
+    if( crc != dsCrc(buffer,7) ) {
+        return -1;
     }
-    return -1;
+    return 0;
 }
 
 // reads scratchpad, returns temperature only, multiplied by 1000
@@ -264,29 +277,33 @@ int dsReadScratchpad()
     if( dsReadRomCmd() < 0 ) {
         return -1;
     }
-    dsUsartTxMessage(READ_SCRATCHPAD);
+    dsTxByte(READ_SCRATCHPAD);
     uint8_t scratchpad[9];
     uint8_t crc;
     for(int i=0 ; i<9 ; ++i) {
-        scratchpad[i] = dsUsartTxMessage(0xff);
+        scratchpad[i] = dsRxByte();
     }
     if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
         return -1;
     }
-    uint8_t tempRaw = scratchpad[0] + (scratchpad[1] << 8);
+    uint32_t tempRaw = (scratchpad[0] + (scratchpad[1] << 8)) & 0x7ff;
+    int sign = 1;
+    if( (scratchpad[1] & 0x80) > 0 ) {
+        sign = -1;
+    }
     switch(scratchpad[4])
     {
         case RESOL_9BIT :
-            return tempRaw * 500;
+            return (tempRaw >> 3) * 500 * sign;
             break;
         case RESOL_10BIT :
-            return tempRaw * 250;
+            return (tempRaw >> 2) * 250 * sign;
             break;
         case RESOL_11BIT :
-            return tempRaw * 125;
+            return (tempRaw >> 1) * 125 * sign;
             break;
         case RESOL_12BIT :
-            return (tempRaw * 625)/10;
+            return (tempRaw * 625)/10 * sign;
             break;
     }
     return -1;
@@ -297,16 +314,20 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
     if( dsReadRomCmd() < 0 ) {
         return -1;
     }
-    dsUsartTxMessage(WRITE_SCRATCHPAD);
-    dsUsartTxMessage((uint8_t)(Tpar & 0x00ff));
-    dsUsartTxMessage((uint8_t)(Tpar >> 8));
-    dsUsartTxMessage(configByte);
+    dsTxByte(WRITE_SCRATCHPAD);
+    dsTxByte((uint8_t)(Tpar & 0x00ff));
+    dsTxByte((uint8_t)(Tpar >> 8));
+    dsTxByte(configByte);
     if( dsReadRomCmd() < 0 ) {
         return -1;
     }
-    dsUsartTxMessage(COPY_SCRATCHPAD);
+    dsTxByte(COPY_SCRATCHPAD);
     uint32_t timeout = 1e6;
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
     while( (dsReadOneBit() == 0) && (--timeout > 0) );
+    USART1_CR1 &= ~USART_CR1_RE;
+    USART1_CR1 &= ~USART_CR1_TE;
     if(timeout < 2) {
         return -1;
     }
@@ -318,7 +339,7 @@ int dsStart()
     if( dsReadRomCmd() < 0 ) {
         return -1;
     }
-    dsUsartTxMessage(CONVERT_T);
+    dsTxByte(CONVERT_T);
     return 0;
 }
 
@@ -328,41 +349,13 @@ int tempBlocking()
     if( dsStart() < 0 ) {
         return -1;
     }
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
     while( (dsReadOneBit() == 0) && (--timeout > 0) );
+    USART1_CR1 &= ~USART_CR1_RE;
+    USART1_CR1 &= ~USART_CR1_TE;
     if(timeout > 0) {
         return dsReadScratchpad();
     }
     return -1;
 }
-
-/*
-void dsRomCycle(uint64_t romCode)
-{
-    int isSuccess = 0;
-    if(isOne) {
-        dsUsartTxMessage(READ_ROM);
-        dsUsartTxMessage(0x00);
-
-    } else {
-        dsUsartTxMessage(SEARCH_ROM);
-    }
-    return isSuccess;
-}
-
-
-int dsInitStandalone()
-{
-    hardwareInit();
-    if(NDEVICE == 1) {
-        return;
-    } else {
-        dsFoundDev();
-    }
-}
-
-
-int dsInitMultiple()
-{
-
-}
-*/

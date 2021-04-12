@@ -45,13 +45,12 @@
 #define DS_PORT GPIOA
 #define RX_PIN  3
 #define TX_PIN  2
-
-// usart related
-#define BAUD9600    0x09c4
+// mcu usart related
+#define BAUD9600    0x1388
 #define BAUD115200  0x01A1
 
 // set the resolution
-#define DEFAULT_RESOL       RESOL_9BIT
+#define DEFAULT_RESOL       RESOL_12BIT
 
 void dsInit(void);
 int dsStart(void);
