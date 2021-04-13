@@ -57,6 +57,4 @@ int dsStart(void);
 int tempBlocking(void);
 int dsReadScratchpad(void);
 
-
-
 #endif

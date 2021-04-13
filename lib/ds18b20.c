@@ -108,7 +108,6 @@ uint8_t dsUsartTxSingleByte(uint8_t byte)
     return ret;
 }
 
-
 uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one)
 {
     uint32_t timeout = 1e6;
