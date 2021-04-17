@@ -1948,4 +1948,6 @@ Text Notes 2450 5200 0    118  ~ 0
 light by timer\n
 Text Notes 1750 6550 0    118  ~ 0
 3.3V power supply
+Text Notes 6450 4450 0    118  ~ 0
+display
 $EndSCHEMATC
