@@ -11,6 +11,7 @@
 
 void clkInit(void);
 void rough_delay_us(uint16_t us);
+void delay_ms(uint16_t ms);
 void delay_s(uint16_t s);
 void f0I2cInit(void);
 void f0I2cSend(uint8_t addr, uint8_t *data, uint8_t nBytes);

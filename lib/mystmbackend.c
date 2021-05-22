@@ -43,10 +43,15 @@ void delay_s(uint16_t s)
 
 void rough_delay_us(uint16_t us)
 {
+    // podbiral na glazok
     volatile uint32_t cnt = (uint32_t)us*(uint32_t)5;
     while(cnt-- > 0);
 }
 
+void delay_ms(uint16_t ms)
+{
+    while(ms-- > 0) rough_delay_us(1000);
+}
 
 void f0I2cInit()
 {

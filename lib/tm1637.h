@@ -23,8 +23,8 @@
 #include "inttypes.h"
 
 // ports
-#define SCL 9
-#define SDA 10
+#define TM_SCL 10
+#define TM_SDA 9
 
 // how much digits on your display
 #define DISPLAY_SIZE        3

@@ -22,11 +22,24 @@
 #include "../libopencm3/include/libopencm3/stm32/dma.h"
 #include "../libopencm3/include/libopencm3/stm32/gpio.h"
 #include "../libopencm3/include/libopencm3/stm32/syscfg.h"
+#include "../libopencm3/include/libopencm3/stm32/f0/nvic.h"
+
+
+volatile uint8_t ifotv = 0;
+volatile uint8_t ifcrc = 0;
+volatile uint8_t ifwait = 0;
+volatile uint8_t conv = 0;
+volatile uint8_t retByte[8];
+volatile uint32_t error = 0;
+
+volatile uint8_t messageTx[8];
+volatile uint8_t messageRx[8];
 
 
 void dsPortConfig(void);
 void dsUsartConfig(void);
 void dsDmaConfig(void);
+void dsSetBaud(uint32_t baud);
 int dsInitSequence(void);
 uint8_t dsUsartTxSingleByte(uint8_t byte);
 uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one);
@@ -34,6 +47,7 @@ uint8_t dsReadOneBit(void);
 int dsTxByte(uint8_t byte);
 uint8_t dsRxByte(void);
 uint8_t dsCrc(uint8_t *data, uint8_t size);
+int32_t dsTransTemp(uint8_t templ, uint8_t temph, uint8_t conf);
 int dsReadRomCmd(void);
 int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
 
@@ -62,11 +76,13 @@ void dsUsartConfig()
     USART1_CR2 |= USART_CR2_STOPBITS_1; // stop bits
     USART1_CR2 &= ~(USART_CR2_MSBFIRST);
     USART1_CR1 &= ~(USART_CR1_OVER8);   // baud rate
+    USART1_CR3 |= USART_CR3_OVRDIS;
+    USART1_CR3 |= USART_CR3_EIE;
+    nvic_enable_irq(NVIC_USART1_IRQ);
     USART1_BRR = BAUD9600;
 }
 
-volatile uint8_t messageTx[8];
-volatile uint8_t messageRx[8];
+
 
 void dsDmaConfig()
 {
@@ -93,6 +109,18 @@ void dsDmaConfig()
     ccr |= DMA_CCR_TEIE;
     DMA1_CCR3 = ccr;
 }
+
+void dsSetBaud(uint32_t baud)
+{
+    USART1_CR1 &= ~USART_CR1_UE;
+    USART1_CR1 &= ~USART_CR1_RE;
+    USART1_CR1 &= ~USART_CR1_TE;
+    USART1_BRR = baud;
+    USART1_CR1 |= USART_CR1_UE;
+    USART1_CR1 |= USART_CR1_RE;
+    USART1_CR1 |= USART_CR1_TE;
+}
+
 
 uint8_t dsUsartTxSingleByte(uint8_t byte)
 {
@@ -145,7 +173,8 @@ uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one)
     USART1_CR3 &= ~USART_CR3_DMAT;
     // decode output
     for(int i=0 ; i<8 ; ++i) {
-        if( (messageRx[i] & 0x02) > 0 ) {
+        retByte[i] = messageRx[i];
+        if( (messageRx[i] & 0x03) > 0 ) {
             ret |= 1<<i;
         }
     }
@@ -174,7 +203,7 @@ void dsInit()
     dsUsartConfig();
     dsDmaConfig();
     rough_delay_us(100);
-    dsWriteScratchpad(0x0000, DEFAULT_RESOL);
+    dsWriteScratchpad(0x7ff, DEFAULT_RESOL);
     dsStart();
 }
 
@@ -184,22 +213,10 @@ int dsInitSequence()
     const uint8_t init_word = 0xf0;
     const uint8_t ok = 0xe0;
     // init seq works on 9600
-    USART1_CR1 &= ~USART_CR1_UE;
-    USART1_CR1 &= ~USART_CR1_RE;
-    USART1_CR1 &= ~USART_CR1_TE;
-    USART1_BRR = BAUD9600;
-    USART1_CR1 |= USART_CR1_UE;
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
+    dsSetBaud(BAUD9600);
     uint8_t ret = dsUsartTxSingleByte(init_word);
     // change baud rate for ongoing communication
-    USART1_CR1 &= ~USART_CR1_UE;
-    USART1_CR1 &= ~USART_CR1_RE;
-    USART1_CR1 &= ~USART_CR1_TE;
-    USART1_BRR = BAUD115200;
-    USART1_CR1 |= USART_CR1_UE;
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
+    dsSetBaud(BAUD115200);
     // check is there ds18b20
     if( ret == ok ) {
         return 0;
@@ -244,6 +261,32 @@ uint8_t dsCrc(uint8_t *data, uint8_t size)
     return crc;
 }
 
+int32_t dsTransTemp(uint8_t templ, uint8_t temph, uint8_t conf)
+{
+    uint32_t tempRaw = ((uint32_t)templ + ((uint32_t)temph << 8)) & 0x07ff;
+    int32_t sign = 1;
+    if( (temph & 0x80) > 0 ) {
+        sign = -1;
+    }
+    switch(conf)
+    {
+        case RESOL_9BIT  :
+            return (int32_t)((tempRaw >> 3) * 500);// * sign;
+            break;
+        case RESOL_10BIT :
+            return (int32_t)((tempRaw >> 2) * 250) * sign;
+            break;
+        case RESOL_11BIT :
+            return (int32_t)((tempRaw >> 1) * 125) * sign;
+            break;
+        case RESOL_12BIT :
+            return (int32_t)((tempRaw * 625)/10) * sign;
+            break;
+    }
+    conv = conf;
+    return -1;
+}
+
 // commands
 
 int dsReadRomCmd()
@@ -271,9 +314,10 @@ int dsReadRomCmd()
 }
 
 // reads scratchpad, returns temperature only, multiplied by 1000
-int dsReadScratchpad()
+int32_t dsReadScratchpad()
 {
     if( dsReadRomCmd() < 0 ) {
+        ifotv = 2;
         return -1;
     }
     dsTxByte(READ_SCRATCHPAD);
@@ -283,29 +327,10 @@ int dsReadScratchpad()
         scratchpad[i] = dsRxByte();
     }
     if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
+        ifcrc = 1;
         return -1;
     }
-    uint32_t tempRaw = (scratchpad[0] + (scratchpad[1] << 8)) & 0x7ff;
-    int sign = 1;
-    if( (scratchpad[1] & 0x80) > 0 ) {
-        sign = -1;
-    }
-    switch(scratchpad[4])
-    {
-        case RESOL_9BIT :
-            return (tempRaw >> 3) * 500 * sign;
-            break;
-        case RESOL_10BIT :
-            return (tempRaw >> 2) * 250 * sign;
-            break;
-        case RESOL_11BIT :
-            return (tempRaw >> 1) * 125 * sign;
-            break;
-        case RESOL_12BIT :
-            return (tempRaw * 625)/10 * sign;
-            break;
-    }
-    return -1;
+    return dsTransTemp(scratchpad[0], scratchpad[1], scratchpad[4]);
 }
 
 int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
@@ -314,8 +339,8 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
         return -1;
     }
     dsTxByte(WRITE_SCRATCHPAD);
+    dsTxByte((uint8_t)((Tpar >> 8) & 0x00ff));
     dsTxByte((uint8_t)(Tpar & 0x00ff));
-    dsTxByte((uint8_t)(Tpar >> 8));
     dsTxByte(configByte);
     if( dsReadRomCmd() < 0 ) {
         return -1;
@@ -336,16 +361,18 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
 int dsStart()
 {
     if( dsReadRomCmd() < 0 ) {
+        ifotv = 3;
         return -1;
     }
     dsTxByte(CONVERT_T);
     return 0;
 }
 
-int tempBlocking()
+int32_t tempBlocking()
 {
     uint32_t timeout = 1e6;
     if( dsStart() < 0 ) {
+        ifotv = 4;
         return -1;
     }
     USART1_CR1 |= USART_CR1_RE;
@@ -356,5 +383,12 @@ int tempBlocking()
     if(timeout > 0) {
         return dsReadScratchpad();
     }
+    ifwait = 1;
     return -1;
+}
+
+void usart1_isr()
+{
+    error = USART1_ISR;
+    USART1_ICR |= USART_ICR_FECF | USART_ICR_ORECF | USART_ICR_NCF;
 }

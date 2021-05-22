@@ -18,6 +18,8 @@
  * limitations under the License.
  */
 
+#include "inttypes.h"
+
 // Rom commands
 #define SEARCH_ROM          0xf0
 #define READ_ROM            0x33
@@ -50,11 +52,11 @@
 #define BAUD115200  0x01A1
 
 // set the resolution
-#define DEFAULT_RESOL       RESOL_12BIT
+#define DEFAULT_RESOL       RESOL_9BIT
 
 void dsInit(void);
 int dsStart(void);
-int tempBlocking(void);
-int dsReadScratchpad(void);
+int32_t tempBlocking(void);
+int32_t dsReadScratchpad(void);
 
 #endif

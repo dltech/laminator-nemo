@@ -40,20 +40,20 @@ void tmInit()
     tmDelayInit();
     uint8_t data[DISPLAY_SIZE] = {};
     tmUpd(data);
-    setBrightness(0);
+    setBrightness(100);
 }
 
 void tmPortInit()
 {
     RCC_AHBENR |= RCC_AHBENR_GPIOAEN;
-    GPIOA_MODER |= GPIO_MODE_OUTPUT << (SCL*2) \
-                 | GPIO_MODE_OUTPUT << (SDA*2);
-    GPIOA_OTYPER |= GPIO_OTYPE_OD << (SCL) \
-                  | GPIO_OTYPE_OD << (SDA);
-    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (SCL*2) \
-                  | GPIO_OSPEED_100MHZ << (SDA*2);
-    GPIOA_PUPDR |= GPIO_PUPD_PULLUP << (SCL*2) \
-                 | GPIO_PUPD_PULLUP << (SDA*2);
+    GPIOA_MODER |= GPIO_MODE_OUTPUT << (TM_SCL*2) \
+                 | GPIO_MODE_OUTPUT << (TM_SDA*2);
+    GPIOA_OTYPER |= GPIO_OTYPE_OD << (TM_SCL) \
+                  | GPIO_OTYPE_OD << (TM_SDA);
+    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (TM_SCL*2) \
+                  | GPIO_OSPEED_100MHZ << (TM_SDA*2);
+    GPIOA_PUPDR |= GPIO_PUPD_PULLUP << (TM_SCL*2) \
+                 | GPIO_PUPD_PULLUP << (TM_SDA*2);
 }
 
 void tmDelayInit()
@@ -86,25 +86,25 @@ int pushByte(uint8_t byte)
     int ret;
     for(int i=0 ; i<8 ; ++i)
     {
-        GPIOA_BRR |= 1 << SCL;
+        GPIOA_BRR |= 1 << TM_SCL;
         quaterTact();
         if((byte & (1<<i)) > 0) {
-            GPIOA_BSRR  |= 1 << SDA;
+            GPIOA_BSRR  |= 1 << TM_SDA;
         } else {
-            GPIOA_BRR |= 1 << SDA;
+            GPIOA_BRR |= 1 << TM_SDA;
         }
         quaterTact();
-        GPIOA_BSRR |= 1 << SCL;
+        GPIOA_BSRR |= 1 << TM_SCL;
         halfTact();
     }
     // ack tact
-    GPIOA_BRR |= 1 << SCL;
+    GPIOA_BRR |= 1 << TM_SCL;
     quaterTact();
-    GPIOA_BSRR |= 1 << SDA;
+    GPIOA_BSRR |= 1 << TM_SDA;
     quaterTact();
-    GPIOA_BSRR  |= 1 << SCL;
+    GPIOA_BSRR  |= 1 << TM_SCL;
     quaterTact();
-    if((GPIOA_IDR & (1 << SDA)) > 0) {
+    if((GPIOA_IDR & (1 << TM_SDA)) > 0) {
         ret = -1;
     } else {
         ret = 0;
@@ -117,23 +117,23 @@ int pushByte(uint8_t byte)
 int tipoI2cBlockingTx1(uint8_t data)
 {
     int err = 0;
-    GPIOA_BSRR |= (1 << SDA) | (1 << SCL);
+    GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
     TIM16_EGR |= TIM_EGR_UG;
     TIM16_SR = 0;
     halfTact();
     halfTact();
     // start condition
-    GPIOA_BRR |= 1 << SDA;
+    GPIOA_BRR |= 1 << TM_SDA;
     halfTact();
     // clock data
     err = pushByte(data);
     // stop bit
-    GPIOA_BRR |= 1 << SDA;
-    GPIOA_BRR |= 1 << SCL;
+    GPIOA_BRR |= 1 << TM_SDA;
+    GPIOA_BRR |= 1 << TM_SCL;
     halfTact();
-    GPIOA_BSRR |= 1 << SCL;
+    GPIOA_BSRR |= 1 << TM_SCL;
     halfTact();
-    GPIOA_BSRR |= (1 << SDA) | (1 << SCL);
+    GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
     return err;
 }
 
@@ -141,25 +141,25 @@ int tipoI2cBlockingTx1(uint8_t data)
 int tipoI2cBlockingTx(uint8_t *data, uint8_t size)
 {
     int err = 0;
-    GPIOA_BSRR |= (1 << SDA) | (1 << SCL);
+    GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
     TIM16_EGR |= TIM_EGR_UG;
     TIM16_SR = 0;
     halfTact();
     halfTact();
     // start condition
-    GPIOA_BRR |= 1 << SDA;
+    GPIOA_BRR |= 1 << TM_SDA;
     halfTact();
     // clock data
     for(int i=0 ; i<size ; ++i) {
         err += pushByte(data[i]);
     }
     // stop bit
-    GPIOA_BRR |= 1 << SDA;
-    GPIOA_BRR |= 1 << SCL;
+    GPIOA_BRR |= 1 << TM_SDA;
+    GPIOA_BRR |= 1 << TM_SCL;
     halfTact();
-    GPIOA_BSRR |= 1 << SCL;
+    GPIOA_BSRR |= 1 << TM_SCL;
     halfTact();
-    GPIOA_BSRR |= (1 << SDA) | (1 << SCL);
+    GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
     return err;
 }
 
