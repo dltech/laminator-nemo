@@ -1,5 +1,5 @@
 /*
- * stm32 usart based ds18b20 lib
+ * stm32 timer based ds18b20 lib
  * Copyright 2021 Mikhail Belkin <dltech174@gmail.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,36 +18,31 @@
 #include "ds18b20.h"
 #include "mystmbackend.h"
 #include "../libopencm3/include/libopencm3/stm32/rcc.h"
-#include "../libopencm3/include/libopencm3/stm32/usart.h"
-#include "../libopencm3/include/libopencm3/stm32/dma.h"
 #include "../libopencm3/include/libopencm3/stm32/gpio.h"
-#include "../libopencm3/include/libopencm3/stm32/syscfg.h"
-#include "../libopencm3/include/libopencm3/stm32/f0/nvic.h"
+#include "../libopencm3/include/libopencm3/stm32/timer.h"
 
+volatile uint32_t timeoutGl;
 
-volatile uint8_t ifotv = 0;
-volatile uint8_t ifcrc = 0;
-volatile uint8_t ifwait = 0;
-volatile uint8_t conv = 0;
-volatile uint8_t retByte[8];
-volatile uint32_t error = 0;
-
-volatile uint8_t messageTx[8];
-volatile uint8_t messageRx[8];
-
-
+// init subfunctions
 void dsPortConfig(void);
-void dsUsartConfig(void);
-void dsDmaConfig(void);
-void dsSetBaud(uint32_t baud);
+void dsTimerConfig(void);
+// timer related functions
+void dsTimerUpdate(void);
+void dsTimerStart(void);
+uint8_t dsTimeout(void);
+int dsElapsedTime(void);
+void dsDelayUs(uint16_t us);
+// GPIO related functions
+uint8_t dsReadPin(void);
+void dsSetPin(void);
+void dsResetPin(void);
+// DS18B20 relateg functions
 int dsInitSequence(void);
-uint8_t dsUsartTxSingleByte(uint8_t byte);
-uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one);
-uint8_t dsReadOneBit(void);
-int dsTxByte(uint8_t byte);
-uint8_t dsRxByte(void);
+uint8_t dsTxBit(uint8_t bit);
+uint8_t dsTxByte(uint8_t byte);
 uint8_t dsCrc(uint8_t *data, uint8_t size);
 int32_t dsTransTemp(uint8_t templ, uint8_t temph, uint8_t conf);
+// commands
 int dsReadRomCmd(void);
 int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
 
@@ -57,142 +52,101 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte);
 void dsPortConfig()
 {
     RCC_AHBENR    |= RCC_AHBENR_GPIOAEN;
-    GPIOA_MODER   |= GPIO_MODE_AF << (TX_PIN*2) \
-                   | GPIO_MODE_AF << (RX_PIN*2);
-    GPIOA_OTYPER  |= GPIO_OTYPE_OD << (TX_PIN);
-    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (TX_PIN*2);
-    GPIOA_PUPDR   |= GPIO_PUPD_PULLUP << (TX_PIN*2) \
-                   | GPIO_PUPD_PULLUP << (RX_PIN*2);
-    GPIOA_AFRL    |= GPIO_AF1 << (TX_PIN*4) \
-                   | GPIO_AF1 << (RX_PIN*4);
+    GPIOA_MODER   |= GPIO_MODE_OUTPUT << (DS_PIN*2);
+    GPIOA_OTYPER  |= GPIO_OTYPE_OD << (DS_PIN);
+    GPIOA_OSPEEDR |= GPIO_OSPEED_100MHZ << (DS_PIN*2);
+    GPIOA_PUPDR   |= GPIO_PUPD_PULLUP << (DS_PIN*2);
+    GPIOA_BSRR    |= 1 << DS_PIN;
 }
 
-void dsUsartConfig()
+void dsTimerConfig()
 {
-    RCC_CFGR3 |= RCC_CFGR3_USART3SW_SYSCLK;
-    RCC_APB2ENR |= RCC_APB2ENR_USART1EN;
-    USART1_CR1 &= ~(USART_CR1_M0);      // 8-bit len
-    USART1_CR1 &= ~(USART_CR1_PCE);     // off parity
-    USART1_CR2 |= USART_CR2_STOPBITS_1; // stop bits
-    USART1_CR2 &= ~(USART_CR2_MSBFIRST);
-    USART1_CR1 &= ~(USART_CR1_OVER8);   // baud rate
-    USART1_CR3 |= USART_CR3_OVRDIS;
-    USART1_CR3 |= USART_CR3_EIE;
-    nvic_enable_irq(NVIC_USART1_IRQ);
-    USART1_BRR = BAUD9600;
+    // timer for tacts
+    RCC_APB2ENR |= RCC_APB2ENR_TIM16EN;
+    TIM16_CR1    = (uint32_t) TIM_CR1_CKD_CK_INT;
+    TIM16_CR1   |= (uint32_t) TIM_CR1_CEN;
+    dsTimerUpdate();
 }
 
-
-
-void dsDmaConfig()
+void dsTimerUpdate()
 {
-    // в который раз уже DMA включаю, тут все понятно
-    RCC_AHBENR |= RCC_AHBENR_DMA1EN;
-    SYSCFG_CFGR1 &= ~SYSCFG_CFGR1_USART1_RX_DMA_RMP;
-    SYSCFG_CFGR1 &= ~SYSCFG_CFGR1_USART1_TX_DMA_RMP;
-    // tx
-    DMA1_CPAR2  = (uint32_t) &USART1_TDR;
-    DMA1_CMAR2  = (uint32_t) &messageTx;
-    DMA1_CNDTR2 = (uint32_t) 8;
-    // конфиг DMA
-    uint32_t ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_8BIT | DMA_CCR_PSIZE_8BIT;
-    ccr |= DMA_CCR_PL_LOW | DMA_CCR_DIR;
-    ccr |= DMA_CCR_TEIE;
-    DMA1_CCR2 = ccr;
-    // rx
-    DMA1_CPAR3  = (uint32_t) &USART1_RDR;
-    DMA1_CMAR3  = (uint32_t) &messageRx;
-    DMA1_CNDTR3 = (uint32_t) 8;
-    // конфиг DMA
-    ccr = DMA_CCR_MINC | DMA_CCR_MSIZE_8BIT | DMA_CCR_PSIZE_8BIT;
-    ccr |= DMA_CCR_PL_LOW;
-    ccr |= DMA_CCR_TEIE;
-    DMA1_CCR3 = ccr;
+    TIM16_PSC   = (uint32_t) 47;
+    TIM16_ARR   = (uint32_t) 65535;
+    TIM16_EGR   |= TIM_EGR_UG;
 }
 
-void dsSetBaud(uint32_t baud)
+void dsTimerStart()
 {
-    USART1_CR1 &= ~USART_CR1_UE;
-    USART1_CR1 &= ~USART_CR1_RE;
-    USART1_CR1 &= ~USART_CR1_TE;
-    USART1_BRR = baud;
-    USART1_CR1 |= USART_CR1_UE;
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
+    timeoutGl  = 1e6;
+    TIM16_EGR |= TIM_EGR_UG;
 }
 
-
-uint8_t dsUsartTxSingleByte(uint8_t byte)
+int dsElapsedTime()
 {
-    uint32_t timeout = 1e6;
-    uint8_t ret = 0xff;
-    USART1_TDR = byte;
-    while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
-    USART1_ISR |= USART_ISR_TC;
-    while(((USART1_ISR & USART_ISR_RXNE) == 0) && (--timeout > 0));
-    if( (USART1_ISR & USART_ISR_RXNE) > 0 ){
-        ret = USART1_RDR;
+    if(--timeoutGl < 5) {
+        return 65000;
     }
-    return ret;
+    return TIM16_CNT;
 }
 
-uint8_t dsUsartTxMessage(uint8_t msg, uint8_t one)
+void dsDelayUs(uint16_t us)
 {
-    uint32_t timeout = 1e6;
-    uint8_t ret = 0x00;
-    // prepare data in dma
-    for(int i=0 ; i<8 ; ++i) {
-        if( (msg & (1 << i)) > 0 ) {
-            messageTx[i] = one;
-        } else {
-            messageTx[i] = 0x00;
-        }
-        messageRx[i] = 0;
-    }
-
-    // DMA config
-    DMA1_CNDTR2 = (uint32_t) 8;
-    DMA1_CNDTR3 = (uint32_t) 8;
-    USART1_CR3 |= USART_CR3_DMAR;
-    USART1_CR3 |= USART_CR3_DMAT;
-    DMA1_CCR2 |= DMA_CCR_EN;
-    DMA1_CCR3 |= DMA_CCR_EN;
-    // on transmisson
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
-    // wait until complete
-    while(((USART1_ISR & USART_ISR_TC) == 0) && (--timeout > 0));
-    // reset flag
-    USART1_ISR |= USART_ISR_TC;
-    // off everything
-    USART1_CR1 &= ~USART_CR1_TE;
-    USART1_CR1 &= ~USART_CR1_RE;
-    DMA1_CCR2 &= ~DMA_CCR_EN;
-    DMA1_CCR3 &= ~DMA_CCR_EN;
-    USART1_CR3 &= ~USART_CR3_DMAR;
-    USART1_CR3 &= ~USART_CR3_DMAT;
-    // decode output
-    for(int i=0 ; i<8 ; ++i) {
-        retByte[i] = messageRx[i];
-        if( (messageRx[i] & 0x03) > 0 ) {
-            ret |= 1<<i;
-        }
-    }
-    return ret;
+    TIM16_EGR |= TIM_EGR_UG;
+    timeoutGl = 1e6;
+    while((TIM16_CNT < us) && (--timeoutGl > 1));
 }
 
-int dsTxByte(uint8_t byte)
+uint8_t dsReadPin()
 {
-    uint8_t ret = dsUsartTxMessage(byte, 0xff);
-    if(ret != byte) {
-        return -1;
+    if((GPIOA_IDR & (1 << DS_PIN)) > 0) {
+        return 1;
     }
     return 0;
 }
 
-uint8_t dsRxByte()
+void dsSetPin()
 {
-    return dsUsartTxMessage(0xff, 0xfe);
+    GPIOA_BSRR |= 1 << DS_PIN;
+}
+
+void dsResetPin()
+{
+    GPIOA_BRR |= 1 << DS_PIN;
+}
+
+uint8_t dsTxBit(uint8_t bit)
+{
+    uint8_t ret = 0;
+    dsResetPin();
+    if(bit == 0) {
+        dsDelayUs(WRITE0T);
+        dsSetPin();
+        dsDelayUs(PULSE_DELAY);
+        return 0;
+    }
+    dsDelayUs(WRITE1T1);
+    dsSetPin();
+    dsTimerStart();
+    dsDelayUs(PULSE_DELAY);
+    while( (dsElapsedTime() < TIMESLOT) && (dsReadPin() == 0) );
+    if(dsElapsedTime() > READT) {
+        ret = 0;
+    } else {
+        ret = 1;
+    }
+    while(dsElapsedTime() < WRITE1T2);
+    return ret;
+}
+
+uint8_t dsTxByte(uint8_t byte)
+{
+    uint8_t ret = 0;
+    for(int i=0 ; i<8 ; ++i) {
+        if( dsTxBit(byte & (1<<i)) == 1 ) {
+            ret |= 1<<i;
+        }
+    }
+    return ret;
 }
 
 // DS18B20 related functions based of low-level presented above
@@ -200,8 +154,7 @@ uint8_t dsRxByte()
 void dsInit()
 {
     dsPortConfig();
-    dsUsartConfig();
-    dsDmaConfig();
+    dsTimerConfig();
     rough_delay_us(100);
     dsWriteScratchpad(0x7ff, DEFAULT_RESOL);
     dsStart();
@@ -210,25 +163,17 @@ void dsInit()
 // returns 0 if device is found
 int dsInitSequence()
 {
-    const uint8_t init_word = 0xf0;
-    const uint8_t ok = 0xe0;
-    // init seq works on 9600
-    dsSetBaud(BAUD9600);
-    uint8_t ret = dsUsartTxSingleByte(init_word);
-    // change baud rate for ongoing communication
-    dsSetBaud(BAUD115200);
-    // check is there ds18b20
-    if( ret == ok ) {
-        return 0;
+    dsResetPin();
+    dsDelayUs(RESET_PULSE);
+    dsSetPin();
+    dsDelayUs(RESET_WAIT);
+    dsTimerStart();
+    while((dsReadPin() == 0) && (dsElapsedTime() < INIT_PULSE_MAX));
+    uint16_t time = dsElapsedTime();
+    if( (time > INIT_PULSE_MAX) || (time < INIT_PULSE_MIN) ) {
+        return -1;
     }
-    return -1;
-}
-
-uint8_t dsReadOneBit()
-{
-    if( (dsUsartTxSingleByte(0xff) & 0x02) > 0 ) {
-        return 1;
-    }
+    while( dsElapsedTime() < RESET_PULSE );
     return 0;
 }
 
@@ -271,7 +216,7 @@ int32_t dsTransTemp(uint8_t templ, uint8_t temph, uint8_t conf)
     switch(conf)
     {
         case RESOL_9BIT  :
-            return (int32_t)((tempRaw >> 3) * 500);// * sign;
+            return (int32_t)((tempRaw >> 3) * 500) * sign;
             break;
         case RESOL_10BIT :
             return (int32_t)((tempRaw >> 2) * 250) * sign;
@@ -283,7 +228,6 @@ int32_t dsTransTemp(uint8_t templ, uint8_t temph, uint8_t conf)
             return (int32_t)((tempRaw * 625)/10) * sign;
             break;
     }
-    conv = conf;
     return -1;
 }
 
@@ -293,20 +237,19 @@ int dsReadRomCmd()
 {
     uint8_t buffer[7];
     int ret;
-    ret =  dsInitSequence();
-    ret += dsTxByte(READ_ROM);
-    if( ret < 0 ) {
+    if( dsInitSequence() < 0 ) {
         return -1;
     }
-    buffer[0] = dsRxByte();
+    dsTxByte(READ_ROM);
+    buffer[0] = dsTxByte(0xff);
     if( buffer[0] != FAMILY_CODE ) {
         return -1;
     }
     // ds ROM CODE not needed
     for(int i=0 ; i<6 ; ++i) {
-        buffer[i+1] = dsRxByte();
+        buffer[i+1] = dsTxByte(0xff);
     }
-    uint8_t crc = dsRxByte();
+    uint8_t crc = dsTxByte(0xff);
     if( crc != dsCrc(buffer,7) ) {
         return -1;
     }
@@ -316,18 +259,17 @@ int dsReadRomCmd()
 // reads scratchpad, returns temperature only, multiplied by 1000
 int32_t dsReadScratchpad()
 {
+    dsTimerUpdate();
     if( dsReadRomCmd() < 0 ) {
-        ifotv = 2;
         return -1;
     }
     dsTxByte(READ_SCRATCHPAD);
     uint8_t scratchpad[9];
     uint8_t crc;
     for(int i=0 ; i<9 ; ++i) {
-        scratchpad[i] = dsRxByte();
+        scratchpad[i] = dsTxByte(0xff);
     }
     if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
-        ifcrc = 1;
         return -1;
     }
     return dsTransTemp(scratchpad[0], scratchpad[1], scratchpad[4]);
@@ -347,11 +289,7 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
     }
     dsTxByte(COPY_SCRATCHPAD);
     uint32_t timeout = 1e6;
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
-    while( (dsReadOneBit() == 0) && (--timeout > 0) );
-    USART1_CR1 &= ~USART_CR1_RE;
-    USART1_CR1 &= ~USART_CR1_TE;
+    while( (dsTxBit(1) == 0) && (--timeout > 0) );
     if(timeout < 2) {
         return -1;
     }
@@ -360,8 +298,8 @@ int dsWriteScratchpad(uint16_t Tpar, uint8_t configByte)
 
 int dsStart()
 {
+    dsTimerUpdate();
     if( dsReadRomCmd() < 0 ) {
-        ifotv = 3;
         return -1;
     }
     dsTxByte(CONVERT_T);
@@ -370,25 +308,14 @@ int dsStart()
 
 int32_t tempBlocking()
 {
+    dsTimerUpdate();
     uint32_t timeout = 1e6;
     if( dsStart() < 0 ) {
-        ifotv = 4;
         return -1;
     }
-    USART1_CR1 |= USART_CR1_RE;
-    USART1_CR1 |= USART_CR1_TE;
-    while( (dsReadOneBit() == 0) && (--timeout > 0) );
-    USART1_CR1 &= ~USART_CR1_RE;
-    USART1_CR1 &= ~USART_CR1_TE;
+    while( (dsTxBit(1) == 0) && (--timeout > 0) );
     if(timeout > 0) {
         return dsReadScratchpad();
     }
-    ifwait = 1;
     return -1;
-}
-
-void usart1_isr()
-{
-    error = USART1_ISR;
-    USART1_ICR |= USART_ICR_FECF | USART_ICR_ORECF | USART_ICR_NCF;
 }

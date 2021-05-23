@@ -5,6 +5,7 @@
 
 
 volatile int32_t temp = 0;
+volatile uint32_t cnts = 0;
 
 int main(void) {
 	delay_ms(10);
@@ -20,5 +21,6 @@ int main(void) {
 			myprintf("%03d",temp/1000);
 		}
 		delay_s(1);
+		++cnts;
 	}
 }

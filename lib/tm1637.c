@@ -25,6 +25,7 @@
 // little init functions as parts of main init function
 void tmPortInit(void);
 void tmDelayInit(void);
+void tmDelayUpdate(void);
 // timer based accurate delays
 void quaterTact(void);
 void halfTact(void);
@@ -54,6 +55,7 @@ void tmPortInit()
                   | GPIO_OSPEED_100MHZ << (TM_SDA*2);
     GPIOA_PUPDR |= GPIO_PUPD_PULLUP << (TM_SCL*2) \
                  | GPIO_PUPD_PULLUP << (TM_SDA*2);
+    GPIOA_BSRR  |= (1 << TM_SDA) | (1 << TM_SCL);
 }
 
 void tmDelayInit()
@@ -61,17 +63,23 @@ void tmDelayInit()
     // timer for tacts
     RCC_APB2ENR |= RCC_APB2ENR_TIM16EN;
     TIM16_CR1   = (uint32_t) TIM_CR1_CKD_CK_INT;
-    TIM16_PSC   = (uint32_t) 63;
-    TIM16_ARR   = (uint32_t) 1;
     TIM16_CR1  |= (uint32_t) TIM_CR1_CEN;
+    tmDelayUpdate();
 }
 
+void tmDelayUpdate()
+{
+    TIM16_PSC   = (uint32_t) 63;
+    TIM16_ARR   = (uint32_t) 1;
+    TIM16_EGR   |= TIM_EGR_UG;
+}
 
 void quaterTact()
 {
     uint32_t timeout = 1e7;
-    while( (TIM16_SR == 0) && (--timeout > 0) );
+    TIM16_EGR  |= TIM_EGR_UG;
     TIM16_SR = 0;
+    while( (TIM16_SR == 0) && (--timeout > 0) );
 }
 
 void halfTact()
@@ -79,7 +87,6 @@ void halfTact()
     quaterTact();
     quaterTact();
 }
-
 
 int pushByte(uint8_t byte)
 {
@@ -118,8 +125,6 @@ int tipoI2cBlockingTx1(uint8_t data)
 {
     int err = 0;
     GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
-    TIM16_EGR |= TIM_EGR_UG;
-    TIM16_SR = 0;
     halfTact();
     halfTact();
     // start condition
@@ -142,8 +147,6 @@ int tipoI2cBlockingTx(uint8_t *data, uint8_t size)
 {
     int err = 0;
     GPIOA_BSRR |= (1 << TM_SDA) | (1 << TM_SCL);
-    TIM16_EGR |= TIM_EGR_UG;
-    TIM16_SR = 0;
     halfTact();
     halfTact();
     // start condition
@@ -165,6 +168,7 @@ int tipoI2cBlockingTx(uint8_t *data, uint8_t size)
 
 void tmUpd(uint8_t *data)
 {
+    tmDelayUpdate();
     tipoI2cBlockingTx1(WRITE_DATA_CMD_AVT);
     uint8_t cnt = 0;
     uint8_t tx[DISPLAY_SIZE+1];
@@ -177,6 +181,7 @@ void tmUpd(uint8_t *data)
 
 void setBrightness(uint8_t percent)
 {
+    tmDelayUpdate();
     uint8_t reg = BRIGHT6P;
     if(percent == 0) {
         reg = DISP_OFF;

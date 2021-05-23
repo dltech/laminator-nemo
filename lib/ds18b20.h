@@ -45,11 +45,20 @@
 
 // mcu related
 #define DS_PORT GPIOA
-#define RX_PIN  3
-#define TX_PIN  2
-// mcu usart related
-#define BAUD9600    0x1388
-#define BAUD115200  0x01A1
+#define DS_PIN  2
+// timings
+#define WRITE0T     100
+#define WRITE1T1    10
+#define WRITE1T2    55
+#define READT       18
+#define TIMESLOT    60
+
+#define RESET_PULSE     500
+#define RESET_WAIT      50
+#define INIT_PULSE_MIN  50
+#define INIT_PULSE_MAX  300
+
+#define PULSE_DELAY  4
 
 // set the resolution
 #define DEFAULT_RESOL       RESOL_9BIT
