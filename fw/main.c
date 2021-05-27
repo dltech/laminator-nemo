@@ -12,6 +12,7 @@ int main(void) {
 	clkInit();
 	tmInit();
 	dsInit();
+	initPwm();
 
 	while(1){
 		temp = tempBlocking();

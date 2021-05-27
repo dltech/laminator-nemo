@@ -22,6 +22,10 @@
 #include "../libopencm3/include/libopencm3/stm32/timer.h"
 
 volatile uint32_t timeoutGl;
+volatile uint32_t dl[200];
+volatile uint32_t cnt = 0;
+volatile uint8_t cst = 0;
+volatile uint8_t ccrc = 0;
 
 // init subfunctions
 void dsPortConfig(void);
@@ -129,12 +133,16 @@ uint8_t dsTxBit(uint8_t bit)
     dsTimerStart();
     dsDelayUs(PULSE_DELAY);
     while( (dsElapsedTime() < TIMESLOT) && (dsReadPin() == 0) );
-    if(dsElapsedTime() > READT) {
+    uint16_t time = dsElapsedTime();
+    dl[cnt++] = time;
+    if(time > READT) {
         ret = 0;
     } else {
         ret = 1;
     }
     while(dsElapsedTime() < WRITE1T2);
+    dl[cnt++] = dsElapsedTime();
+    if(cnt>200) cnt = 0;
     return ret;
 }
 
@@ -145,6 +153,8 @@ uint8_t dsTxByte(uint8_t byte)
         if( dsTxBit(byte & (1<<i)) == 1 ) {
             ret |= 1<<i;
         }
+        // I don't know why
+        dsDelayUs(20);
     }
     return ret;
 }
@@ -170,7 +180,11 @@ int dsInitSequence()
     dsTimerStart();
     while((dsReadPin() == 0) && (dsElapsedTime() < INIT_PULSE_MAX));
     uint16_t time = dsElapsedTime();
+    dl[cnt++] = time;
+    dl[cnt++] = 0;
+    if(cnt>200) cnt = 0;
     if( (time > INIT_PULSE_MAX) || (time < INIT_PULSE_MIN) ) {
+        ++cst;
         return -1;
     }
     while( dsElapsedTime() < RESET_PULSE );
@@ -251,6 +265,7 @@ int dsReadRomCmd()
     }
     uint8_t crc = dsTxByte(0xff);
     if( crc != dsCrc(buffer,7) ) {
+        ++ccrc;
         return -1;
     }
     return 0;
@@ -270,6 +285,7 @@ int32_t dsReadScratchpad()
         scratchpad[i] = dsTxByte(0xff);
     }
     if( scratchpad[8] != dsCrc(scratchpad, 8) ) {
+        ++ccrc;
         return -1;
     }
     return dsTransTemp(scratchpad[0], scratchpad[1], scratchpad[4]);

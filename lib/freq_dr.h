@@ -4,7 +4,7 @@
 #define SIN_RESOL_HP    16
 #define DIR_OFFS        5
 
-#define PINF    4
+#define PINL    6
 #define PINR    7
 
 #define SYSCLK  48000000

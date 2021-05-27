@@ -47,11 +47,11 @@
 #define DS_PORT GPIOA
 #define DS_PIN  2
 // timings
-#define WRITE0T     100
+#define WRITE0T     70
 #define WRITE1T1    10
-#define WRITE1T2    55
-#define READT       18
-#define TIMESLOT    60
+#define WRITE1T2    70
+#define READT       10
+#define TIMESLOT    100
 
 #define RESET_PULSE     500
 #define RESET_WAIT      50
