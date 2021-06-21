@@ -4,6 +4,7 @@
 *.ld
 *.bin
 *.elf
+*bak
 core
 
 sch/heater_dir_ctrl/heater_dir_ctrl.kicad_pcb-bak
