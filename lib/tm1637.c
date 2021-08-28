@@ -197,7 +197,7 @@ void setBrightness(uint8_t percent)
         reg = BRIGHT69P;
     } else if(percent <= 75) {
         reg = BRIGHT75P;
-    } else if(percent <= 81 ) {
+    } else if(percent <= 81) {
         reg = BRIGHT81P;
     } else if(percent <= 100) {
         reg = BRIGHT88P;
